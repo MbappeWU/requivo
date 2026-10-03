@@ -551,12 +551,13 @@ class SessionService:
     def diff(self, slug: str, proposal: dict | str, *, require_complete: bool = True) -> UpdateResult:
         """Dry run of `update_model`: what *would* change, nothing written. `revision` is the one that would be created."""
         self._ensure_canonical(slug)  # the apply's own gate, `out/` hint included: never a phantom first apply (#678)
-        meta = self.meta(slug)
-        current = self.load_model(slug) if meta.current_revision > 0 else None
+        with self.repo.lock(slug):
+            meta = self.repo.read_meta(slug)
+            current = self.load_model(slug) if meta.current_revision > 0 else None
         perimeter = resolve_perimeter(meta.perimeter)
         new = validate_proposal(proposal, require_complete=require_complete, current=current,
                                 perimeter=perimeter)
-        return self._plan(slug, current, new, apply=False, perimeter=perimeter)
+        return self._plan(slug, current, new, apply=False, perimeter=perimeter, before=meta)
 
     def update_model(self, slug: str, proposal: dict | str, *, require_complete: bool = True,
                      expected_revision: int | None = None, provenance: dict | None = None) -> UpdateResult:
@@ -625,7 +626,8 @@ class SessionService:
             logger.info("model applied: slug=%s revision=%d changed_slots=%d stale_artifacts=%d",
                        slug, revision, len(changed), len(stale))
         else:
-            meta = self.repo.read_meta(slug) if self.repo.has_meta(slug) else None
+            meta = before if before is not None else (
+                self.repo.read_meta(slug) if self.repo.has_meta(slug) else None)
             revision = (meta.current_revision + 1) if meta else 1
             stale = _resolve_stale(set(meta.artifact_status) if meta else set())
 
