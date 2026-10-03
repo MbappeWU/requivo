@@ -12,6 +12,109 @@ fragments in `changelog.d/` are the material to summarize from.
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-10-04
+
+### Highlights
+
+- The keyless plugin reaches every perimeter: `session init --perimeter`, `/requivo:run` picks one before it starts, and `/requivo:gtm-plan` writes the go-to-market plan with no API key; `--context none` records "no product context".
+- The go-to-market plan can contest a premise, and discovery now asks about the buyer's objections and the alternative they use today.
+- Every checkpoint, in the plugin and the CLI, shows "what I will assume unless you object"; `/requivo:run` reads what a request forces an existing system to do, and asks ambiguous phrases and open questions in plain words before it stops.
+- The decision brief carries the decision sections: evidence and its limits, the riskiest assumptions with a cheap test and a kill signal, options set aside, and what would make you stop. Documents may propose labelled defaults.
+- `requivo impact` and `requivo model show` take `--json`, `impact` separates generated artifacts from types that would merely rest on a slot, and `status` gives "confirmed" one meaning and says why each slot blocks.
+- A forced `session import` no longer overwrites a session recreated during the import, and resuming a session that never got a model no longer loops.
+
+### Added
+
+- `/requivo:run` grounds a new session in the repository it is started from (#594): it reads the checkout before it reasons, and before the first question hands you a perimeter recap — what the codebase appears to be and what it is built with, what the request touches, the request restated, the context cards, what was assumed, and what it did not read. A value taken from the repository is graded as an assumption with the file it came from as evidence, and repository text is treated as data, never as instructions. The CLI reads no repository yet; `decision: repository-grounding-starts-in-the-plugin` records the measurement that funds a scanner there.
+
+- `REQUIVO_DEBUG_DUMPS=0` turns off the failed-reply debug dump (#693): nothing is written under `.requivo/debug/` and `provider_output_invalid` carries no `raw_reply_path`, for a process serving several workspaces.
+
+- `SessionService.export_archive(slug)` and `SessionService.import_archive(data, *, force=False, name=None)` join the declared Python seam (#702): the same zip `requivo session export` writes and the same checks and refusals `requivo session import` raises, against the service's own repository rather than the ambient workspace, so a program holding `FileSessionRepository(root=...)` can hand a session back to the CLI without re-implementing the archive. The CLI verbs are now thin wrappers over them, with `--json` output and exit codes unchanged.
+- A new `unsupported_repository` error (HTTP 501, `details: {repository, operation}`) refuses either method on a repository that is not file-backed (#702).
+
+- A first `requivo run` / `requivo discover` now opens with a perimeter recap before its first question (#709), in the order `/requivo:run` uses: the product context cards the session is grounded on and the request as the engine read it, followed by what it will assume unless you object (#731). A resumed run does not repeat it, nothing new is stored, and no `--json` output changes. The CLI still reads no repository.
+
+- `requivo impact` and `requivo model show` accept `--json` (#717). `impact --json` with named slots prints the report the API's `/impact` route returns, plus `slug`; with no slots, `{slug, map, evidence}`. `model show --json` prints the model document the bare verb already printed, under the same `ensure_ascii` contract as every other `--json` output. Both are recorded in `docs/compatibility.md`.
+- `requivo impact` now tells the artifacts that exist from the ones that would merely rest on the slot (#717): only generated artifacts are listed under "ARTIFACTS THAT GO STALE", and the types never generated in the session move to a separate "NOT GENERATED YET" line. The impact report (CLI `--json`, the API's `/impact`, MCP `get_impact`) gains `stale_artifacts`, the generated subset of `artifacts`, `null` for a bare `model.json`; `artifacts` keeps its meaning.
+- Compatibility: compatible - two new `--json` outputs and one added key on the impact report; no existing key changes meaning.
+
+- `requivo session init --perimeter <id>` names the session's perimeter at creation, the keyless path's way to the go-to-market perimeter (#719). An unknown id is refused as `unknown_perimeter`, the code `SessionService.create_session` already raises, and nothing is created. `session init --json` gains `perimeter`, the resolved id (`software` when none was named). `/requivo:run` now picks the perimeter before `session init` from the installed ones `requivo doctor --json` lists, asks when the request fits more than one, passes `--perimeter` for anything but `software`, reads `requivo schema --perimeter <id>` rather than the software schema, and names the perimeter in its recap.
+- `/requivo:gtm-plan` writes the go-to-market plan with no API key, reasoning in the Claude Code session (#719). It mirrors `prompts/gtm_plan.md`: the plan as a chosen set rather than a ranking, the rationale against the resource envelope, risks, open decisions, and 0–3 challenges under "a forced challenge is worse than none". It folds the plan's `challenges`, `exclusions` and `thresholds` into the model with `model apply`, the same three lists `requivo gtm_plan` absorbs, so a later answer reports what it unseats, and saves the plan with `artifact save --type gtm_plan` against the revision that apply made. `/requivo:docs` offers it on a go-to-market session and only there; a software session still sees its seven documents. `/requivo:status` points a ready go-to-market session at it.
+- Compatibility: compatible - one added flag, one added `--json` key and one added plugin skill, which runs only verbs and flags the released CLI already has. `/requivo:run` omits `--perimeter` for a software session, so that call is unchanged on every released CLI; against a CLI older than this release, a go-to-market choice is refused by argparse before anything is written, and the skill says so rather than falling back to software.
+
+- `--context none` records an explicit "no product context" selection on `session init`, `session rescope`, `run` and `discover` (#721), distinct from omitting the flag, which still loads every card. It is stored as `context_cards: ["none"]`; `requivo context --session` prints a statement that there is no product context, `status` shows "none, chosen at creation", and the engine's prompt carries the same statement, so impact rests on each slot's `impact_default` baseline instead of a foreign product. `none` stands alone: combined with a card it is refused as `unknown_context_card`, and the accidental empty selections keep their refusals (`empty_selector_token`, `empty_selection`). `/requivo:run` offers it when no installed card fits the request and names it in the recap.
+- Compatibility: compatible - a new value of an existing field, recorded in `docs/compatibility.md`. One observable moves: `none` is now reserved, so a context card file named `none.md` can no longer be selected with `--context none`, and a 3.4.1 session that stored `["none"]` to select that card now reads as no product context. A session written with `["none"]` still loads in an older Requivo, which refuses its reasoning turns and `context --session` with `unknown_context_card` and never loads every card in its place; `session verify` there reports the card as missing.
+
+- The go-to-market plan (`requivo gtm_plan`) can now contest a premise (#728): it carries 0–3 `challenges`, the same shape as the decision brief's (headline, premise, alternative, consequence, recommendation, and the slots each one `contests`), rendered under "Assumptions worth contesting" and absorbed into the model like its exclusions and thresholds. A later answer that changes a contested slot reports the challenge as a premise to re-examine, as it does for a software session. A plan with no challenge is still valid, and an older plan or session without the field still loads.
+
+- The go-to-market schema gains two slots in its *What?* pillar (#729): `objections` (default impact high; highest when the offer moves the buyer's data or workflow somewhere new), the main reason the ideal customer would not buy or switch and what answers it, and `alternatives` (default impact medium; high once the offer is priced), what they use today and what it costs them. The `existing_distribution` probe also asks whether that audience matches the ICP or was gathered with a different promise.
+- Compatibility: compatible - a new slot, which `docs/compatibility.md` allows in a minor. One observable moves: a complete go-to-market proposal without the two slots, which 3.4.1 accepted, is now refused by `model apply` and `model diff` with `missing_required_slot` naming `objections` and `alternatives` (exit 0 to 1); add both, as unknown if nothing is known yet. A go-to-market session written before this change still loads, verifies and reports status; the two slots it lacks read at their baseline impact, so `objections` is listed among the blocking slots (and a session that was ready reports not ready) until the next turn fills it, while `alternatives` does not block. Generating its go-to-market plan still works: a generation absorbs the plan's reasoning without re-checking the model's completeness, which is the discovery boundary's job (the decision brief takes the same path).
+
+- `requivo run`, `requivo discover` and `requivo answer` now show "What I will assume unless you object" at every checkpoint (#731), as `/requivo:run` does: each value the engine inferred that would change the solution if wrong (the medium- and high-impact ones, the rule the estimate's soft slots already use), with its evidence, then the summary's assumptions, one line each. A later checkpoint prints in full only what that turn added or changed, and counts the earlier ones still standing; a resumed run, `requivo status` and `requivo demo` list them all. Overturning one takes a sentence in any answer, and it is folded in like one. The list replaces the first run's "Assumed to get this far", which named every inferred slot whatever its impact. Nothing new is stored, no prompt or schema changed, and no `--json` output changes.
+
+### Changed
+
+- `examples/README.md` now shows how to run the `case*.md` request prompts, and that it is a paid call needing an API key (#661).
+
+- The type checker's gate is raised (#667): pyright now runs in `standard` mode over the whole package and in `strict` mode over `core/`, the deterministic engine whose types carry the invariants. The changes are annotations and restructured control flow; `DiscoveryService.generate()` called with an artifact type held in a plain `str` is now typed `Generated[Any]` rather than `Generated[object]`. No session format, `--json` payload, CLI behaviour or runtime behaviour of the Python seam changes.
+
+- `/requivo:run` changes how it grounds, assumes and asks (#730, #731, #732, #733, #734, #735, #736). Before deriving questions it lists what the request forces an existing system it read to do that it does not do today (new data access, volume, external calls, permissions), as constraints, risks and questions (#732); a go-to-market session grounds in the public-facing copy, signup and waitlist forms and analytics events first, and the recap says what was read (#730). Every checkpoint shows "what I will assume unless you object", one line each with its rationale, and an overturned default is folded in like an answer (#731); acceptance criteria are drafted from confirmed answers for veto instead of asked with an example (#734). A requester's phrase with two readings is asked about, quoted, instead of resolved as an assumption (#733); a queued question can give way to a better one the last answer opened (#735); every question carries one decision in plain words with no leading example, and open questions are asked before the loop stops rather than left for the documents (#736). A solo builder confirming the as-is read from their own system now grades it confirmed (#716, the plugin's half). The CLI's checkpoint does the same (#731).
+
+- The Claude Code plugin now reasons as an expert who proposes and labels, not an engine that only renders what it was told (#744, `decision: the-expert-proposes-and-labels`). The requester's word is still never invented, but the host now contributes proposed defaults (evidence `proposed: <rationale>`) and domain facts (`domain: <fact>`), both `inferred`. `/requivo:prd` may state a requirement that rests on a proposal, tagged `[proposed]` with its rationale, and writes every proposal back into the model through `model apply` before it saves, so the proposal appears in "what I will assume unless you object" and can be vetoed. The brief and the PRD tag each claim by its source: requester, evidence, repo, proposed, domain or assumed. The other generation skills build from proposals already in the model and tag them the same way. The API path's generator prompts are unchanged.
+- `/requivo:brief` adds the decision sections (#746): evidence and its limits, options considered and set aside (saved as `exclusions`), riskiest assumptions with a cheap test and a kill signal, what would make me stop (both saved as `thresholds`), and the open questions that block the decision. Each opportunity now gets the same "what would have to be true" check as a challenge, and one that fails it becomes a challenge (#749).
+
+### Fixed
+
+- The n8n example workflows now import with `n8n import:workflow`, which refused them for lack of an `id`, and their README names the two n8n 2.x settings the flows need: Execute Command left out of `NODES_EXCLUDE`, and file access opened to the workspace (#437).
+
+- The reference guard in `tests/test_source_form.py` now resolves a `test_<name>.py` file citation whatever the length of the name (#581); the ten-character floor stays for bare names. A citation to a short-named test module such as `test_encoding.py` can no longer go stale with the suite green.
+
+- `track_usage()` now declares its return type (`Iterator[UsageLedger]`), so `with track_usage() as ledger:` keeps the `UsageLedger` type in an editor and type checker (#663).
+
+- `requivo context --session <slug>` now refuses a session that does not exist, with the standard "no session named" message, instead of printing every context card and exiting 0 (#677).
+
+- The apply's dry run — `requivo model diff`, the HTTP API's `POST /api/v1/sessions/{slug}/revisions/preview` and the MCP `preview_revision` tool — now refuses a session that does not exist with `session_not_found`, as `model apply` does, instead of planning a first apply: `model diff` exits 1 rather than 0, and the preview route answers 404 rather than 200. A session with no model yet (revision 0), which the dry run refused as `session_not_found` ("has no model yet"), now plans revision 1: exit 0 rather than 1, 200 rather than 404. A session only in the retired `out/` layout gets the `requivo session migrate` hint `model apply` gives (#678).
+- Compatibility: compatible - `model diff` moves off exit 0 (the preview off 200) for a session that does not exist and for one only in the retired `out/` layout, where it planned a first apply that ignored the legacy model and counted every slot as changed, paths no correct invocation was on; it moves onto exit 0 for a session at revision 0 (#678).
+
+- `requivo artifact save` on a missing session now prints the standard "no session named ..." sentence rather than "not in the canonical store; apply a model first", and on a session only in the retired `out/` layout the `requivo session migrate` hint `model apply` gives; `code` and `details.slug` are unchanged, and the `out/` case adds `details.legacy` (#679).
+
+- `requivo model apply` and `requivo session rescope` on a missing session now answer with the standard sentence (slug, sessions root searched, `requivo session list`) instead of a bare "no session 'nope'"; exception type, `code` and `details` are unchanged (#680).
+
+- `status` no longer borrows an unrelated session's revision, perimeter, context cards and artifact freshness when given the path to a loose `model.json` whose parent directory happens to share that session's name (#681).
+
+- `requivo docs <slug> <typo>` on a session with no model yet now refuses the unknown document type instead of printing the `requivo run` hint and exiting 0 (#683).
+
+- Prevent provider-authored values from forging Markdown structure in generated artifacts (#686).
+
+- The n8n reply workflow now accepts answer text beginning with `-` instead of parsing it as a CLI option (#690).
+
+- `impact` no longer borrows an unrelated session's perimeter when given the path to a loose `model.json` whose parent directory happens to share that session's name: the file is read under the default (software) perimeter, as a bare model file always was (#705).
+
+- Keep session diff plans on one consistent repository snapshot when an apply races the dry run (#706).
+
+- A solo builder's as-is can now be confirmed in a discovery turn (#716, the engine's half; the plugin's landed in #737): an as-is read from the builder's own system, restated to them and confirmed by them, is graded `explicit` — the builder vouching for what they built, not a belief about the world — so a confirmed `current_process` can stop blocking readiness instead of blocking it on a session where nothing is left to ask. An as-is they have not confirmed stays `inferred`. This changes the discovery prompt and both perimeters' confidence grading in their schemas; the readiness rule itself is unchanged.
+
+- A session with no model yet no longer points at `/requivo:discover`, which left the plugin in #545 (#720). `status`, `impact` and `model show` now name the keyless step, `requivo model apply <slug> -` (or `/requivo:run <slug>` in Claude Code), beside the API one. The refusal keeps its `session_not_found` code: moving the condition onto a code of its own is breaking, and is left for the next major.
+- `requivo status` on a session created with `--provider claude-code` no longer presents the paid `requivo answer` as the only next step (#720): its footer points at `/requivo:run <slug>` first and names `requivo answer` as the with-a-key alternative. Other sessions, and `status --json`, are unchanged; a stale or missing document on a `claude-code` session still names its API generator verb.
+- The plugin no longer loops on a session that was created but never reasoned (#720). `/requivo:run` used to resume it with `model show` and `status`, which refuse such a session with a pointer back at `/requivo:run`; it now reads revision 0 off the `session list` row, takes the perimeter and cards from `session show` and the request from the session's `request.md`, and reasons from scratch. `/requivo:docs` and `/requivo:gtm-plan` read revision 0 off the same row instead of waiting for a `status` that never reports it.
+- Compatibility: compatible - message text, a terminal footer and plugin skill text only; no code, exit code or `--json` key moves.
+
+- The status screen has one meaning of "Confirmed" (#722). A slot the client confirmed but that is still below the coverage readiness requires is shown as "Confirmed, not yet precise enough" rather than under "Confirmed", and the "Ready?" line says why each slot blocks: unconfirmed, too thin, or unknown. The readiness rule itself is unchanged. The status payload (`status --json`, the API's `/status`, MCP `get_status`) gains a `reason` (`unconfirmed`, `thin`, `unknown`) on each `readiness.blocking_slots` and `remaining_gaps` entry. The Web already marked such a slot "partial" and is unchanged, as is the decision brief's readiness block.
+- Compatibility: compatible - a terminal relabel and one key added inside nested entries; readiness decides exactly as before.
+
+- A session's first `model apply` (and the `model diff` that plans it) now reports the reasoning the proposal introduced (#723): `changed_decisions`, `changed_challenges`, `changed_opportunities`, `changed_exclusions` and `changed_thresholds` list its ids, the convention `changed_slots` already followed, on the CLI `--json` and the API/MCP apply and diff payloads alike. The `invalidated_*` lists stay empty on a first apply, since nothing prior is unseated, and staleness is decided exactly as before.
+- Compatibility: compatible - the same keys, populated on revision 1 where they were always empty.
+
+- `requivo model validate` takes `--session <slug>` or `--perimeter <id>` (#743) and checks the proposal against that perimeter's slots, the vocabulary `model apply` holds it to. Without either it still checks against `software`, so a valid go-to-market proposal was refused as `unknown_slot`; with `--session` it is not. An unknown id is `unknown_perimeter` and a missing session `session_not_found`, as on the sibling verbs. The dry run that `/requivo:run` and the plugin's `REASONING.md` allow after a failed fix now passes `--session`, and `/requivo:gtm-plan` drops its note warning against the verb.
+- Compatibility: compatible - two added, mutually exclusive flags; the default and every existing invocation are unchanged. A CLI older than this release refuses `--session` as an unrecognized argument (exit 2), and the skills say to drop the flag only on a `software` session.
+
+- `session import --force` no longer deletes a session that was deleted and recreated under the same slug while the archive was being read (#753). Under the session lock, the swap now checks that the session at the slug is still the one it observed before extracting (its directory and its `session_id`); if not, it refuses with a new code, `import_target_changed` (HTTP 409, `details: {slug}`), having imported nothing and removed nothing.
+- Compatibility: compatible - one added error code, on a path no correct invocation was on. Such an import used to exit 0 by destroying a session nobody had asked it to replace, and now exits 1. Recorded in `docs/compatibility.md` and `docs/cli.md`.
+
+### Security
+
+- The Claude Code plugin's skills no longer grant `Bash(requivo:*)`: each one now runs without a permission prompt only the `requivo` subcommands its own steps call, so `requivo session delete` and `requivo session import` always ask first, even if a repository file the `run` skill reads tells it to run them (#710).
+
 ## [3.4.1] - 2026-10-02
 
 ### Highlights
@@ -6132,7 +6235,8 @@ robustness holes that real input exposes were closed, and the regression lens an
   generators (PRD, user stories, estimate, acceptance criteria, delivery epic with GitHub/GitLab
   exports), and the MIT license.
 
-[Unreleased]: https://github.com/jbkkz/requivo/compare/v3.4.1...HEAD
+[Unreleased]: https://github.com/jbkkz/requivo/compare/v3.5.0...HEAD
+[3.5.0]: https://github.com/jbkkz/requivo/releases/tag/v3.5.0
 [3.4.1]: https://github.com/jbkkz/requivo/releases/tag/v3.4.1
 [3.4.0]: https://github.com/jbkkz/requivo/releases/tag/v3.4.0
 [3.3.0]: https://github.com/jbkkz/requivo/releases/tag/v3.3.0
