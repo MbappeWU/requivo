@@ -334,7 +334,6 @@ def test_a_missing_document_path_is_an_error_not_content(monkeypatch):
 def test_a_user_file_read_failure_is_named_without_a_traceback(monkeypatch, tmp_path, failure, reason):
     """#760: a filesystem refusal at the user-file boundary is a clean invalid-model error."""
     brief = tmp_path / "locked\n.json"
-    brief.write_text("{}", encoding="utf-8")
     real_read_text = Path.read_text
 
     def deny_read(path, *args, **kwargs):
