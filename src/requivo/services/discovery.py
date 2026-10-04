@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Generic, Literal, NamedTuple, TypeVar, cast, overload
 
-from requivo.core.context import card_summaries, resolve_cards
+from requivo.core.context import card_summaries, resolve_cards, write_generated_card
 from requivo.core.contracts import (
     PRD,
     AcceptanceCriteria,
@@ -27,6 +27,7 @@ from requivo.core.contracts import (
     EngineOutput,
     Epic,
     EstimateDraft,
+    GeneratedCard,
     GoToMarketPlan,
     PerimeterDecision,
     PerimeterJudgment,
@@ -287,6 +288,9 @@ class Grounding(NamedTuple):
 
     judgment: ContextJudgment | None
     why_not: str
+    # An `uncovered` verdict (#598): where its card was written, or why it was not, or not selected.
+    written: Path | None = None
+    note: str = ""
 
 
 class Routing(NamedTuple):
@@ -537,9 +541,12 @@ class DiscoveryService:
 
         grounding = self.judge_grounding(request, cards=cards)
         judgment = grounding.judgment
-        if judgment is None or judgment.decision is not ContextDecision.installed:
+        if judgment is None or judgment.decision is ContextDecision.none:
             return ClaimAndGround(meta, grounding, cards, routing)
-        narrowed = resolve_cards(judgment.cards)
+        if judgment.decision is ContextDecision.uncovered:
+            grounding, narrowed = self._write_the_missing_card(grounding, judgment.card, created=created)
+        else:
+            narrowed = resolve_cards(judgment.cards)
         if cards or not created or not narrowed or narrowed == cards:
             return ClaimAndGround(meta, grounding, cards, routing)
 
@@ -549,7 +556,26 @@ class DiscoveryService:
         # `reclaim.meta.context_cards` is what the session records, landed or not; inferring the cards
         # from `created` mis-reported an idempotent re-entry (#601).
         self._guard_claim(reclaim.meta, created=reclaim.created, held=held, held_slugs=held_slugs)
+        if grounding.written is not None and not reclaim.landed:
+            grounding = grounding._replace(note=f"the card was written to {grounding.written}, but this "
+                                                "session had moved past revision 0 and keeps its cards")
         return ClaimAndGround(reclaim.meta, grounding, reclaim.meta.context_cards, routing)
+
+    def _write_the_missing_card(self, grounding: Grounding, card: GeneratedCard | None, *,
+                                created: bool) -> tuple[Grounding, list[str] | None]:
+        """Write an `uncovered` verdict's card and narrow to it alone (#598), under `installed`'s
+        preconditions; a refused or failed write keeps every card and says why, never costing the
+        discovery. `test_an_uncovered_verdict_writes_its_card_and_reclaims_under_it_alone`."""
+        if card is None:  # only a provider that skipped the contract gets here
+            return grounding._replace(note="the verdict carried no card to write"), None
+        if not created:
+            return grounding._replace(note="this session was claimed by an earlier run, so no card "
+                                           "was written for it"), None
+        try:
+            written = write_generated_card(card)
+        except (ValueError, OSError) as e:
+            return grounding._replace(note=f"the card was not written: {e}"), None
+        return grounding._replace(written=written), [written.stem]
 
     def claim_session(self, request: str, *, cards: list[str] | None, slug: str | None,
                       perimeter: str = DEFAULT_PERIMETER):
