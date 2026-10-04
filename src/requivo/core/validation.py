@@ -11,7 +11,14 @@ from typing import Any, cast
 
 from pydantic import ValidationError
 
-from requivo.core.contracts import MAX_INPUT_CHARS, EngineOutput, ModelProposal, missing_required_slots, unknown_slots
+from requivo.core.contracts import (
+    MAX_INPUT_CHARS,
+    Confirmation,
+    EngineOutput,
+    ModelProposal,
+    missing_required_slots,
+    unknown_slots,
+)
 from requivo.core.errors import InputTooLargeError, InvalidModelError, MissingRequiredSlotError, UnknownSlotError
 from requivo.core.perimeters import DEFAULT_PERIMETER
 
@@ -40,6 +47,21 @@ def completeness_gap(out: ModelProposal, perimeter: str = DEFAULT_PERIMETER) -> 
     return None
 
 
+def unearned_confirmation(out: ModelProposal | EngineOutput) -> Incompleteness | None:
+    """A turn no answer has reached can settle no claim (#751): what the request states is `source: requester`,
+    still `open`. Judged on the provider's first call, the one place that knows no answer exists — revision 0
+    cannot tell (`test_a_first_model_cannot_carry_a_claim_nobody_answered`)."""
+    for sid, s in out.model.items():
+        for c in s.claims:
+            if c.confirmation in (Confirmation.let_stand, Confirmation.confirmed):
+                return Incompleteness(
+                    f"claim {c.text!r} on {sid} is {c.confirmation.value}, but nothing has been asked yet: "
+                    "on a first model every claim is `open` or `to_test` — what the request states is "
+                    "`source: requester`, not a confirmation.",
+                    path=f"model.{sid}.claims", details={"slot": sid, "claim": c.id})
+    return None
+
+
 def require_input_within_bounds(text: str, *, field: str, limit: int = MAX_INPUT_CHARS) -> None:
     """Refuse `text` over `limit` characters before a provider call or a persist (invariant 3, never
     truncate; invariant 14, the service is the boundary, #255). `field` names what to shorten."""
@@ -53,7 +75,8 @@ def validate_proposal(data: dict[str, Any] | str, *, require_complete: bool = Tr
                       perimeter: str = DEFAULT_PERIMETER) -> EngineOutput:
     """Validate a proposed model (dict or JSON string) into an `EngineOutput`, raising a structured
     `RequivoError`. `require_complete` gates the completeness boundary; the vocabulary check always
-    runs. `current` is the model being refined, which makes the reasoning tri-state real (`ModelProposal`)."""
+    runs. `current` is the model being refined, which makes the reasoning tri-state real (`ModelProposal`).
+    No claim rule here: revision 0 can land after answered turns (`test_a_first_apply_may_carry_a_claim_answered_in_the_conversation`)."""
     parsed: object = data
     if isinstance(data, str):
         try:

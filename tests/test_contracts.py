@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 
 import pytest
-from _fakes import out, printed, slot
+from _fakes import full_model, out, printed, slot
 from pydantic import ValidationError
 
 from requivo.core.analysis import (
@@ -32,6 +32,7 @@ from requivo.core.contracts import (
     Exclusion,
     Feature,
     GoToMarketPlan,
+    ModelProposal,
     Opportunity,
     Requirement,
     Scenario,
@@ -108,6 +109,52 @@ def test_a_testable_slot_with_no_test_plan_is_refused():
         out({"problem": slot(0, "testable", "high")})
     plan = "Ship a waitlist page and see whether 20 people sign up."
     assert out({"problem": slot(0, "testable", "high", test_plan=plan)}).model["problem"].confidence.value == "testable"
+
+
+_CLAIM = dict(text="5-10 hours a week", source="requester")
+_OVER_CAP = list(dict(_CLAIM, text=f"claim {n}") for n in range(9))
+
+
+@pytest.mark.parametrize("claims", [
+    [dict(_CLAIM, confirmation="to_test")], [dict(_CLAIM, test_plan="ask twice")],
+    [dict(_CLAIM, confirmation="confirmed")], [dict(_CLAIM, impact="high")],
+    [_CLAIM, dict(_CLAIM, id="clm_forged")], _OVER_CAP, [dict(_CLAIM, said_by="cfo")],
+], ids=["to-test-unplanned", "plan-on-open", "confirmed-by-nobody", "above-its-slot", "one-id-twice",
+        "nine-claims", "unknown-field"])
+def test_a_claim_is_refused_rather_than_repaired(claims):
+    """#751, invariants 3-5: each refusal rides the retry loop; eight claims within the rules are kept,
+    each id `clm_` over its text, recomputed, and a decision's `source` moves no decision id."""
+    with pytest.raises(ValidationError):
+        Slot.model_validate(dict(slot(80, "inferred", "medium"), claims=claims))
+    kept = Slot.model_validate(dict(slot(80, "inferred", "medium"), claims=_OVER_CAP[:7] + [
+        dict(_CLAIM, id="clm_forged", confirmation="confirmed", answered_by="requester", impact="low")]))
+    assert len(kept.claims) == 8 and kept.claims[-1].id == Slot.model_validate(dict(slot(), claims=[_CLAIM])).claims[0].id
+    assert kept.claims[-1].id.startswith("clm_") and kept.claims[-1].id != "clm_forged"
+    assert DesignDecision(decision="Approve-first", source="requester").id == DesignDecision(decision="Approve-first").id
+
+
+def _settled(confirmation: str) -> dict:
+    return full_model(constraints=dict(slot(80, "inferred", "high", "5-10 h/week"),
+                                       claims=[dict(_CLAIM, confirmation=confirmation, answered_by="requester")]))
+
+
+@pytest.mark.parametrize("confirmation", ["confirmed", "let_stand"])
+def test_a_first_model_cannot_carry_a_claim_nobody_answered(confirmation):
+    """#751: the provider's first call has asked nothing, so stated is not confirmed; it rides the retry loop."""
+    from requivo.providers.anthropic.generators import _require_complete_model
+    with pytest.raises(ValueError, match="nothing has been asked yet"):
+        _require_complete_model(ModelProposal.model_validate(_settled(confirmation)), first=True)
+    _require_complete_model(ModelProposal.model_validate(_settled(confirmation)))
+
+
+def test_a_first_apply_may_carry_a_claim_answered_in_the_conversation(tmp_path, monkeypatch):
+    """#751: the interactive loop lands revision 0 after answered turns, so the services judge no first-claim rule."""
+    from requivo.services.sessions import SessionService
+    monkeypatch.setenv("REQUIVO_WORKSPACE", str(tmp_path))
+    svc = SessionService()
+    svc.create_session("We need flexible hours.", slug="answered")
+    svc.update_model("answered", _settled("confirmed"))
+    assert svc.load_model("answered").model["constraints"].claims[0].confirmation.value == "confirmed"
 
 
 # ── reasoning items and their ids (invariant 5) ────────────────────────────────
