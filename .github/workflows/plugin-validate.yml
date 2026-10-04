@@ -90,6 +90,7 @@ name: Plugin manifests
 # to branch protection.
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
