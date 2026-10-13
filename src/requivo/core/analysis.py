@@ -6,7 +6,9 @@ from typing import Any
 from requivo.core.contracts import (
     IMPACT_RANK,
     SOFT_COMPLETENESS,
+    ClaimSource,
     Confidence,
+    Confirmation,
     EngineOutput,
     Impact,
     Question,
@@ -110,6 +112,33 @@ def blocking_reason(s: Slot | None) -> str:
     if s is None or s.confidence is Confidence.empty:
         return "unknown"
     return "thin" if is_thin(s) else "unconfirmed"
+
+
+# How the engine marks a slot the client delegated (`engine.md`, the run skill): its evidence opens with it.
+DELEGATED_EVIDENCE = "client delegated"
+
+
+def stated_and_defaults(s: Slot) -> tuple[list[str], list[tuple[str, str]]]:
+    """An `explicit` slot split into what the client stated and the defaults it holds, each `(text, source)`
+    (#809): claim by claim (#751), a `let_stand` claim, or under `Client delegated:` evidence any claim
+    not the requester's, is a default (`let_stand`/`delegated`); the slot moves whole only when nothing on
+    it was stated. A naming over what is recorded, never a second confidence."""
+    if s.confidence is not Confidence.explicit:
+        return [], []
+    delegated = s.evidence.lstrip().casefold().startswith(DELEGATED_EVIDENCE)
+    stated: list[str] = []
+    defaults: list[tuple[str, str]] = []
+    for c in s.claims:
+        if c.confirmation is Confirmation.let_stand:
+            defaults.append((c.text, "let_stand"))
+        elif delegated and c.source is not ClaimSource.requester:
+            defaults.append((c.text, "delegated"))
+        else:
+            stated.append(c.text)
+    if stated:
+        return (stated, defaults) if defaults else ([s.value], [])
+    whole = "delegated" if delegated else defaults[0][1] if defaults else ""
+    return ([], [(s.value, whole)]) if whole else ([s.value], [])
 
 
 def state_of(s: Slot) -> str:
